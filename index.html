@@ -2824,57 +2824,89 @@ function setConn(ok){var d=document.getElementById('sDot'),t=document.getElement
 // ════════════════════════════════════════════════
 // PORTFOLIO SYNC HELPERS (TLP)
 // ════════════════════════════════════════════════
+// ════════════════════════════════════════════════
+// PORTFOLIO REALTIME SYNC (TLP)
+// ════════════════════════════════════════════════
+
+// Push portfolio ไป Sheet แล้วรับ list กลับมา re-render ทันที
 function _pushPortfolio(id,name,bal,fund,color,oldName){
   if(!S.scriptUrl) return;
   var payload={action:'savePortfolio',id:id,name:name,initBalance:bal||0,fund:fund||'',color:color||'',source:'TLP'};
   if(oldName && oldName!==name) payload.oldName=oldName;
   fetch(S.scriptUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(r){return r.json();})
+    .then(function(d){if(d.success&&d.portfolios) _applyPortfoliosTLP(d.portfolios);})
     .catch(function(){});
 }
 
+// Delete portfolio meta แล้วรับ list กลับมา re-render ทันที
 function _deletePortfolioMeta(id,name){
   if(!S.scriptUrl) return;
   fetch(S.scriptUrl,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'deletePortfolioMeta',id:id,name:name||id})})
+    .then(function(r){return r.json();})
+    .then(function(d){if(d.success&&d.portfolios) _applyPortfoliosTLP(d.portfolios);})
     .catch(function(){});
 }
 
+// ดึง portfolio list จาก Sheet แล้ว apply
 function syncPortfoliosFromSheet(){
   if(!S.scriptUrl) return;
   fetch(S.scriptUrl+'?action=listPortfolios&_='+Date.now())
     .then(function(r){return r.json();})
-    .then(function(d){
-      if(!d.success||!d.portfolios) return;
-      var changed=false;
-      d.portfolios.forEach(function(p){
-        if(!p.id||!p.name) return;
-        // ถ้า source เป็น NTJ ให้ map ชื่อ → ใช้ name เป็น key เพราะ NTJ ไม่มี id ตรงกัน
-        // หา portfolio ที่มีชื่อตรงกัน
-        var existId=null;
-        Object.keys(S.portfolios).forEach(function(k){
-          if(S.portfolios[k].name===p.name) existId=k;
-        });
-        if(!existId){
-          // สร้างใหม่ใน TLP
-          var newId=p.id||('port_'+Date.now()+'_'+Math.random().toString(36).slice(2,6));
-          S.portfolios[newId]={name:p.name,balance:p.initBalance||0,fund:p.fund||''};
-          localStorage.setItem('port_'+newId+'_s','{}');
-          localStorage.setItem('port_'+newId+'_t','{}');
-          changed=true;
-        } else {
-          // อัปเดต metadata ถ้าต่างกัน
-          if(S.portfolios[existId].balance!==p.initBalance && p.source!=='TLP'){
-            S.portfolios[existId].balance=p.initBalance||0;
-            changed=true;
-          }
-        }
-      });
-      if(changed){
-        localStorage.setItem('tj_ports',JSON.stringify(S.portfolios));
-        renderPortfolioBar();
-        showToast('📁 อัปเดตพอร์ตจาก Sheet แล้ว','success');
-      }
-    }).catch(function(){});
+    .then(function(d){if(d.success&&d.portfolios) _applyPortfoliosTLP(d.portfolios);})
+    .catch(function(){});
+}
+
+// Apply portfolio list จาก Sheet เข้า TLP state
+function _applyPortfoliosTLP(sheetPorts){
+  if(!sheetPorts||!sheetPorts.length) return;
+  var changed=false;
+
+  // 1) เพิ่มหรืออัปเดต portfolio ที่มีใน Sheet
+  sheetPorts.forEach(function(p){
+    if(!p.id||!p.name) return;
+    if(S.portfolios[p.id]){
+      // อัปเดต metadata (Sheet เป็น source of truth)
+      var cur=S.portfolios[p.id];
+      if(cur.name!==p.name){ cur.name=p.name; changed=true; }
+      if(p.initBalance>0 && cur.balance!==p.initBalance){ cur.balance=p.initBalance; changed=true; }
+      if(p.fund && cur.fund!==p.fund){ cur.fund=p.fund; changed=true; }
+    } else {
+      // พอร์ตใหม่จาก Sheet (สร้างจากอีกเว็บ) — ใช้ id จาก Sheet เลย
+      S.portfolios[p.id]={name:p.name,balance:p.initBalance||0,fund:p.fund||''};
+      localStorage.setItem('port_'+p.id+'_s','{}');
+      localStorage.setItem('port_'+p.id+'_t','{}');
+      changed=true;
+    }
+  });
+
+  // 2) ลบพอร์ตที่ไม่มีใน Sheet แล้ว (ลบจากอีกเว็บ)
+  var sheetIds={};
+  sheetPorts.forEach(function(p){ if(p.id) sheetIds[p.id]=true; });
+  var toDelete=[];
+  Object.keys(S.portfolios).forEach(function(k){
+    if(k!=='default' && !sheetIds[k]) toDelete.push(k);
+  });
+  // ถ้าใน Sheet ไม่มี default เลย อย่าลบ (กัน edge case)
+  if(sheetPorts.length>0 && toDelete.length>0){
+    toDelete.forEach(function(k){
+      localStorage.removeItem('port_'+k+'_s');
+      localStorage.removeItem('port_'+k+'_t');
+      delete S.portfolios[k];
+      changed=true;
+    });
+    // ถ้า active port ถูกลบ ให้ switch ไปพอร์ตแรก
+    if(!S.portfolios[S.currentPortfolio]){
+      var remaining=Object.keys(S.portfolios);
+      if(remaining.length>0) switchPortfolio(remaining[0]);
+    }
+  }
+
+  if(changed){
+    localStorage.setItem('tj_ports',JSON.stringify(S.portfolios));
+    renderPortfolioBar();
+  }
 }
 
 function sendSheet(action,data){
@@ -2967,7 +2999,10 @@ function setAutoSync(){
   localStorage.setItem('tj_autosync',String(min));
   if(_autoSyncTimer){clearInterval(_autoSyncTimer);_autoSyncTimer=null;}
   if(min>0){
-    _autoSyncTimer=setInterval(function(){syncFromSheet(false);},min*60*1000);
+    _autoSyncTimer=setInterval(function(){
+      syncPortfoliosFromSheet();  // sync portfolio list ก่อน
+      syncFromSheet(false);       // แล้วค่อย sync trades
+    },min*60*1000);
     showToast('🔄 Auto-sync ทุก '+min+' นาที','success');
   } else {
     showToast('⏹ ปิด Auto-sync แล้ว','');
