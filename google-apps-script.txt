@@ -98,7 +98,8 @@ function doGet(e) {
   const sheet  = e.parameter.sheet  || '';
 
   if (action === 'getTrades')  return handleGetTrades(sheet);       // NTJ
-  if (action === 'listSheets') return handleListSheets();           // NTJ
+  if (action === 'listSheets')      return handleListSheets();
+  if (action === 'listPortfolios') return handleListPortfolios();           // NTJ
   if (action === 'getShare')   return handleGetShare(e.parameter.id || '');
   if (action === 'loadAssets') return respond2(loadAssets());       // TLP
   if (action === 'loadAll')    return respond2(loadAll(e.parameter.portfolio || 'default')); // TLP Sync
@@ -117,7 +118,9 @@ function doPost(e) {
     if (action === 'addTrade')    return handleAddTrade(body.trade, body.sheet || '');
     if (action === 'updateTrade') return handleUpdateTrade(body.trade, body.sheet || '');
     if (action === 'deleteTrade' && body.sheet !== undefined) return handleDeleteTrade(body.id, body.sheet || '');
-    if (action === 'renameSheet') return handleRenameSheet(body.oldName, body.newName);
+    if (action === 'renameSheet')      return handleRenameSheet(body.oldName, body.newName);
+    if (action === 'savePortfolio')    return handleSavePortfolio(body);
+    if (action === 'deletePortfolioMeta') return handleDeletePortfolioMetaAndReturn(body);
     if (action === 'saveShare')   return handleSaveShare(body.payload || '');
 
     // ── TLP actions ──────────────────────────────────────
@@ -739,22 +742,42 @@ function loadAll(portfolio) {
           date        : date,
           portfolio   : String(r[38] || port),
           asset       : String(r[5]  || ''),
-          side        : String(r[39] || (r[23]==='Buy'?'Long':r[23]==='Sell'?'Short':'')),
+          side        : (function(s,pos){
+            // r[39]=side(AN), r[23]=position(X)
+            if(s==='Long'||s==='Short') return s;
+            if(pos==='Buy')  return 'Long';
+            if(pos==='Sell') return 'Short';
+            return '';
+          })(String(r[39]||''), String(r[23]||'')),
           lots        : String(r[20] || ''),
           entry       : String(r[14] || ''),
           close       : String(r[40] || ''),
+          position    : (function(s,pos){
+            // position field for NTJ (Buy/Sell)
+            if(pos==='Buy'||pos==='Sell') return pos;
+            if(s==='Long')  return 'Buy';
+            if(s==='Short') return 'Sell';
+            return '';
+          })(String(r[39]||''), String(r[23]||'')),
           tp          : String(r[15] || ''),
           sl          : String(r[16] || ''),
           pnl         : String(r[26] || '0'),
           commission  : String(r[21] || '0'),
-          result      : String(r[17] || ''),  // Win/Loss/BE หรือ TP/Loss/Miss
+          result      : (function(v){
+            // Normalize: NTJ TP→Win, Miss→BE; TLP ส่ง Win/Loss/BE มาตรฐาน
+            if(v==='TP') return 'Win';
+            if(v==='Miss') return 'BE';
+            return String(v||'');
+          })(r[17]),
           risk        : String(r[18] || ''),
           maxRR       : String(r[22] || ''),
           timeInPos   : String(r[6]  || ''),
           entryDate   : String(r[7]  || ''),
           closeDate   : String(r[8]  || ''),
           setupClass  : String(r[10] || ''),
+          cls         : String(r[10] || ''),   // NTJ alias
           candle      : String(r[12] || ''),
+          model       : String(r[12] || ''),   // NTJ alias
           code        : String(r[9]  || ''),
           mode        : String(r[11] || ''),
           tf          : '',
@@ -762,10 +785,13 @@ function loadAll(portfolio) {
           zone        : String(r[13] || ''),
           confirm     : String(r[42] || ''),
           sessions    : String(r[3]  || ''),
+          session     : String(r[3]  || ''),   // NTJ alias
           emotion     : String(r[43] || ''),
           discipline  : String(r[44] || ''),
           note        : String(r[36] || ''),
+          tip         : String(r[36] || ''),   // NTJ alias
           imgLink     : String(r[35] || ''),
+          pictureUrl  : String(r[35] || ''),   // NTJ alias
         });
       });
     }
@@ -826,9 +852,102 @@ function loadAssets() {
 }
 
 // ════════════════════════════════════════════════════════════
+// ─── PORTFOLIO META ──────────────────────────────────────────
+const PORT_HDR = ['id','name','color','initBalance','fund','source','updatedAt'];
+
+function _getPortSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(PORT_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(PORT_SHEET);
+    sh.hideSheet();
+    sh.getRange(1,1,1,PORT_HDR.length).setValues([PORT_HDR])
+      .setFontWeight('bold').setBackground('#0d1219').setFontColor('#dce8f5');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function handleListPortfolios() {
+  return respond({ success:true, portfolios:_getAllPortfolios() });
+}
+
+function handleSavePortfolio(body) {
+  if (!body.id || !body.name) return respond({ success:false, error:'ต้องมี id และ name' });
+  const sh   = _getPortSheet();
+  const data = sh.getDataRange().getValues();
+  const now  = new Date().toISOString();
+  const row  = [
+    String(body.id),
+    String(body.name),
+    String(body.color||''),
+    parseFloat(body.initBalance)||0,
+    String(body.fund||''),
+    String(body.source||''),
+    now
+  ];
+  let found = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(body.id)) { found = i+1; break; }
+  }
+  if (found > 0) sh.getRange(found, 1, 1, row.length).setValues([row]);
+  else sh.appendRow(row);
+  if (body.oldName && body.oldName !== body.name) {
+    try { handleRenameSheet(body.oldName, body.name); } catch(e) {}
+  }
+  // Return ทุก portfolio กลับทันที เพื่อให้เว็บ sync realtime
+  const allPorts = _getAllPortfolios(sh);
+  return respond({ success:true, id:body.id, portfolios:allPorts });
+}
+
+function handleDeletePortfolioMetaAndReturn(body) {
+  handleDeletePortfolioMeta(body);
+  const sh = _getPortSheet();
+  const allPorts = _getAllPortfolios(sh);
+  return respond({ success:true, portfolios:allPorts });
+}
+
+function _getAllPortfolios(sh) {
+  const data = (sh || _getPortSheet()).getDataRange().getValues();
+  if (data.length <= 1) return [];
+  return data.slice(1).map(r => ({
+    id          : String(r[0]||''),
+    name        : String(r[1]||''),
+    color       : String(r[2]||''),
+    initBalance : parseFloat(r[3])||0,
+    fund        : String(r[4]||''),
+    source      : String(r[5]||''),
+    updatedAt   : String(r[6]||''),
+  })).filter(p => p.id && p.name);
+}
+
+function handleDeletePortfolioMeta(body) {
+  if (!body.id) return respond({ success:false, error:'ต้องมี id' });
+  const sh   = _getPortSheet();
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(body.id)) { sh.deleteRow(i+1); break; }
+  }
+  const portName = String(body.name||'');
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (portName) { const s = ss.getSheetByName(portName); if (s) ss.deleteSheet(s); }
+  ['Trades','Sessions','Summary'].forEach(function(shName) {
+    const s = ss.getSheetByName(shName);
+    if (!s || s.getLastRow() < 2) return;
+    const portCol = shName === 'Trades' ? 3 : 2;
+    const vals = s.getDataRange().getValues();
+    for (let i = vals.length-1; i >= 1; i--) {
+      if (String(vals[i][portCol-1]) === String(body.id) || String(vals[i][portCol-1]) === portName)
+        s.deleteRow(i+1);
+    }
+  });
+  return respond({ success:true, id:body.id });
+}
+
 // SHARE SNAPSHOT (NTJ)
 // ════════════════════════════════════════════════════════════
 const SHARE_SHEET = '_shares';
+const PORT_SHEET  = '_portfolios';
 
 function handleSaveShare(payload) {
   if (!payload) return respond({ success: false, error: 'No payload' });
