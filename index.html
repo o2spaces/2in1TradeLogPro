@@ -1666,6 +1666,8 @@ function confirmAddPortfolio(btn){
   renderPortfolioBar();
   localStorage.setItem('tj_ports',JSON.stringify(S.portfolios));
   showToast('✅ เพิ่มพอร์ต "'+name+'" แล้ว','success');
+  // ── Sync portfolio to Sheet ──
+  if(S.scriptUrl) _pushPortfolio(id,name,bal,fund,'');
 }
 function editPortfolio(id){
   var p=S.portfolios[id];if(!p) return;
@@ -1687,6 +1689,7 @@ function editPortfolio(id){
 function confirmEditPortfolio(id,btn){
   var name=(document.getElementById('editPortName').value||'').trim();
   if(!name){showToast('กรุณาใส่ชื่อพอร์ต','error');return;}
+  var oldName=S.portfolios[id]?S.portfolios[id].name:'';
   S.portfolios[id].name=name;
   S.portfolios[id].balance=parseFloat(document.getElementById('editPortBal').value)||0;
   S.portfolios[id].fund=(document.getElementById('editPortFund').value||'').trim();
@@ -1694,9 +1697,12 @@ function confirmEditPortfolio(id,btn){
   renderPortfolioBar();
   localStorage.setItem('tj_ports',JSON.stringify(S.portfolios));
   showToast('✅ อัปเดตพอร์ตแล้ว','success');
+  // ── Sync portfolio to Sheet ──
+  if(S.scriptUrl) _pushPortfolio(id,name,S.portfolios[id].balance,S.portfolios[id].fund,'',oldName);
 }
 function deletePortfolio(id,btn){
   if(!confirm('ลบพอร์ตนี้? ข้อมูลออเดอร์ในพอร์ตนี้จะหายไปด้วย')) return;
+  var portName=S.portfolios[id]?S.portfolios[id].name:id;
   delete S.portfolios[id];
   localStorage.removeItem('port_'+id+'_s');
   localStorage.removeItem('port_'+id+'_t');
@@ -1712,7 +1718,10 @@ function deletePortfolio(id,btn){
   }
   renderPortfolioBar();
   localStorage.setItem('tj_ports',JSON.stringify(S.portfolios));
-  if(S.scriptUrl) sendSheet('deletePortfolio',{portfolio:id});
+  if(S.scriptUrl){
+    sendSheet('deletePortfolio',{portfolio:id});
+    _deletePortfolioMeta(id,portName);
+  }
   showToast('🗑 ลบพอร์ตแล้ว','success');
 }
 
@@ -2797,9 +2806,77 @@ async function testAPI(){
 
 // SHEET
 function openSheet(){document.getElementById('mSheet').classList.add('open');document.body.classList.add('modal-open');document.getElementById('sheetUrl').value=S.scriptUrl;}
-function saveSheet(){S.scriptUrl=document.getElementById('sheetUrl').value.trim();localStorage.setItem('tj_url',S.scriptUrl);testSheet();}
+function saveSheet(){
+  S.scriptUrl=document.getElementById('sheetUrl').value.trim();
+  localStorage.setItem('tj_url',S.scriptUrl);
+  testSheet();
+  if(S.scriptUrl){
+    // push portfolios ที่มีอยู่ขึ้น Sheet
+    Object.keys(S.portfolios).forEach(function(id){
+      var p=S.portfolios[id];
+      _pushPortfolio(id,p.name,p.balance||0,p.fund||'','');
+    });
+    setTimeout(syncPortfoliosFromSheet,2000);
+  }
+}
 function testSheet(){var url=document.getElementById('sheetUrl').value.trim();if(!url){document.getElementById('sheetRes').textContent='ใส่ URL ก่อน';return;}document.getElementById('sheetRes').textContent='กำลังทดสอบ...';fetch(url).then(function(r){return r.json();}).then(function(d){if(d.status==='ready'){setConn(true);document.getElementById('sheetRes').style.color='var(--green)';document.getElementById('sheetRes').textContent='✅ เชื่อมต่อสำเร็จ!';showToast('✅ Google Sheet พร้อม','success');}}).catch(function(){document.getElementById('sheetRes').style.color='var(--red)';document.getElementById('sheetRes').textContent='❌ เชื่อมต่อไม่ได้';});}
 function setConn(ok){var d=document.getElementById('sDot'),t=document.getElementById('sTxt');if(ok){d.classList.add('connected');t.textContent='Connected';t.style.color='var(--green)';loadAssetsFromSheet();}else{d.classList.remove('connected');t.textContent='Offline';t.style.color='var(--text-muted)';}}
+// ════════════════════════════════════════════════
+// PORTFOLIO SYNC HELPERS (TLP)
+// ════════════════════════════════════════════════
+function _pushPortfolio(id,name,bal,fund,color,oldName){
+  if(!S.scriptUrl) return;
+  var payload={action:'savePortfolio',id:id,name:name,initBalance:bal||0,fund:fund||'',color:color||'',source:'TLP'};
+  if(oldName && oldName!==name) payload.oldName=oldName;
+  fetch(S.scriptUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .catch(function(){});
+}
+
+function _deletePortfolioMeta(id,name){
+  if(!S.scriptUrl) return;
+  fetch(S.scriptUrl,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'deletePortfolioMeta',id:id,name:name||id})})
+    .catch(function(){});
+}
+
+function syncPortfoliosFromSheet(){
+  if(!S.scriptUrl) return;
+  fetch(S.scriptUrl+'?action=listPortfolios&_='+Date.now())
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d.success||!d.portfolios) return;
+      var changed=false;
+      d.portfolios.forEach(function(p){
+        if(!p.id||!p.name) return;
+        // ถ้า source เป็น NTJ ให้ map ชื่อ → ใช้ name เป็น key เพราะ NTJ ไม่มี id ตรงกัน
+        // หา portfolio ที่มีชื่อตรงกัน
+        var existId=null;
+        Object.keys(S.portfolios).forEach(function(k){
+          if(S.portfolios[k].name===p.name) existId=k;
+        });
+        if(!existId){
+          // สร้างใหม่ใน TLP
+          var newId=p.id||('port_'+Date.now()+'_'+Math.random().toString(36).slice(2,6));
+          S.portfolios[newId]={name:p.name,balance:p.initBalance||0,fund:p.fund||''};
+          localStorage.setItem('port_'+newId+'_s','{}');
+          localStorage.setItem('port_'+newId+'_t','{}');
+          changed=true;
+        } else {
+          // อัปเดต metadata ถ้าต่างกัน
+          if(S.portfolios[existId].balance!==p.initBalance && p.source!=='TLP'){
+            S.portfolios[existId].balance=p.initBalance||0;
+            changed=true;
+          }
+        }
+      });
+      if(changed){
+        localStorage.setItem('tj_ports',JSON.stringify(S.portfolios));
+        renderPortfolioBar();
+        showToast('📁 อัปเดตพอร์ตจาก Sheet แล้ว','success');
+      }
+    }).catch(function(){});
+}
+
 function sendSheet(action,data){
   if(!S.scriptUrl)return;
   var icons={saveTrade:'📊',saveSession:'📝',deleteTrade:'🗑',deleteDay:'🗑',saveAssets:'🗂️',deletePortfolio:'🗑'};
@@ -2869,6 +2946,8 @@ function syncFromSheet(showMsg){
           });
         }
       }
+      // ── Sync portfolios ──
+      syncPortfoliosFromSheet();
       // ── Re-render ──
       updateStats();renderCal();updateRecent();renderTodayOrders();
       var now=new Date().toLocaleTimeString('th-TH');
@@ -2898,6 +2977,8 @@ function setAutoSync(){
 function initAutoSync(){
   var saved=parseInt(localStorage.getItem('tj_autosync')||'5');
   _syncIntervalMin=saved;
+  // sync portfolio list ตอนเปิดเว็บ
+  if(S.scriptUrl) setTimeout(syncPortfoliosFromSheet, 1500);
   var sel=document.getElementById('autoSyncInterval');
   if(sel) sel.value=String(saved);
   if(saved>0 && S.scriptUrl){
