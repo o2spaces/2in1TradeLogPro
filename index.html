@@ -2196,7 +2196,17 @@ function addTrade(){
   S.trades[S.mKey]=S.mTrades;
   persistPort();
   renderTodayOrders();
-  if(S.scriptUrl) sendSheet('saveTrade',Object.assign({date:S.mKey},trade));
+  if(S.scriptUrl){
+    // ส่งฟิลด์ alias เพิ่มเพื่อให้ NTJ อ่านได้ด้วย
+    var sheetPayload=Object.assign({date:S.mKey},trade,{
+      cls      : trade.setupClass || '',   // NTJ alias for setupClass
+      model    : trade.candle    || '',   // NTJ alias for candle
+      pictureUrl: trade.imgLink  || '',   // NTJ alias for imgLink
+      tip      : trade.note      || '',   // NTJ alias for note
+      session  : trade.sessions  || '',   // NTJ alias for sessions
+    });
+    sendSheet('saveTrade', sheetPayload);
+  }
   showToast('✅ เพิ่มออเดอร์แล้ว','success');
 }
 
@@ -2268,7 +2278,7 @@ function renderTT(){
   var pv=document.getElementById('dayPnlV');if(pv){pv.textContent=(pnl>=0?'+':'')+'$'+pnl.toFixed(2);pv.style.color=pnl>=0?'var(--green)':'var(--red)';}
   document.getElementById('trBody').innerHTML=S.mTrades.map(function(t,i){
     var p=parseFloat(t.pnl)||0;
-    var resBadge=t.result==='Win'?'<span style="color:var(--green);font-size:10px;font-weight:600;">✓W</span>':t.result==='Loss'?'<span style="color:var(--red);font-size:10px;font-weight:600;">✗L</span>':'<span style="color:var(--amber);font-size:10px;">BE</span>';
+    var _r=t.result;var resBadge=(_r==='Win'||_r==='TP')?'<span style="color:var(--green);font-size:10px;font-weight:600;">✓W</span>':_r==='Loss'?'<span style="color:var(--red);font-size:10px;font-weight:600;">✗L</span>':'<span style="color:var(--amber);font-size:10px;">BE</span>';
     var imgCell=t.imgLink?'<a href="'+t.imgLink+'" target="_blank" style="font-size:12px;text-decoration:none;">🖼️</a>':'-';
     return '<tr><td style="font-family:var(--font-mono);font-weight:500">'+t.asset+'</td><td><span class="side-badge '+t.side.toLowerCase()+'">'+t.side+'</span></td><td>'+t.lots+'</td><td style="font-family:var(--font-mono)">'+t.entry+'</td><td style="font-family:var(--font-mono)">'+(t.close||'-')+'</td><td class="'+(p>=0?'pnl-pos':'pnl-neg')+'">'+(p>=0?'+':'')+'$'+Math.abs(p).toFixed(2)+'</td><td>'+resBadge+'</td><td style="font-size:10px;color:var(--text-muted)">'+(t.timeInPos||'-')+'</td><td style="font-size:10px;color:var(--text-secondary)">'+t.note+'</td><td>'+imgCell+'</td><td style="white-space:nowrap;"><button class="btn-del" onclick="editTr('+i+')" title="แก้ไข" style="color:var(--accent);margin-right:2px;">✎</button><button class="btn-del" onclick="delTr('+i+')">✕</button></td></tr>';
   }).join('');
@@ -2288,7 +2298,11 @@ function editTr(i){
   S._editIdx=i;
   document.getElementById('orderForm').style.display='block';
   document.getElementById('oAsset').value=t.asset||'';
-  setSide(t.side||'Long');
+  // normalize side: NTJ sends Buy/Sell, TLP uses Long/Short
+  var _side=t.side||'';
+  if(_side==='Buy') _side='Long';
+  else if(_side==='Sell') _side='Short';
+  setSide(_side||'Long');
   document.getElementById('oEntry').value=t.entry||'';
   document.getElementById('oTP').value=t.tp||'';
   document.getElementById('oSL').value=t.sl||'';
@@ -2300,11 +2314,11 @@ function editTr(i){
   document.getElementById('oEntryDate').value=t.entryDate||'';
   document.getElementById('oCloseDate').value=t.closeDate||'';
   document.getElementById('oTimePos').value=t.timeInPos||'';
-  document.getElementById('oNote').value=t.note||'';
-  document.getElementById('oImgLink').value=t.imgLink||'';
+  document.getElementById('oNote').value=t.note||t.tip||'';
+  document.getElementById('oImgLink').value=t.imgLink||t.pictureUrl||'';
   document.getElementById('oMaxRR').value=t.maxRR||'';
-  document.getElementById('oSetupClass').value=t.setupClass||'';
-  document.getElementById('oCandle').value=t.candle||'';
+  document.getElementById('oSetupClass').value=t.setupClass||t.cls||'';
+  document.getElementById('oCandle').value=t.candle||t.model||'';
   document.getElementById('oCode').value=t.code||'';
   document.getElementById('oMode').value=t.mode||'';
   document.getElementById('oTF').value=t.tf||'';
@@ -2320,8 +2334,9 @@ function editTr(i){
   var disc=parseInt(t.discipline)||5;
   document.getElementById('oDiscSlider').value=disc;
   updateOrderDisc(disc);
-  setResult(t.result||'BE');
-  var sel=document.getElementById('oResultSel');if(sel)sel.value=t.result||'BE';
+  setResult((function(r){if(r==='TP')return 'Win';if(r==='Miss')return 'BE';return r||'BE';})(t.result));
+  var _nr=(t.result==='TP')?'Win':(t.result==='Miss')?'BE':(t.result||'BE');
+  var sel=document.getElementById('oResultSel');if(sel)sel.value=_nr;
   calcAll();
   document.querySelector('#orderForm .btn-primary').textContent='✓ Update Trade';
   document.querySelector('#orderForm .btn-primary').onclick=function(){updateTrade();};
@@ -2370,7 +2385,16 @@ function updateTrade(){
   S.trades[S.mKey]=S.mTrades;
   persistPort();
   updateStats();renderCal();updateRecent();renderTodayOrders();
-  if(S.scriptUrl) sendSheet('saveTrade',Object.assign({date:S.mKey},trade));
+  if(S.scriptUrl){
+    var sheetPayload2=Object.assign({date:S.mKey},trade,{
+      cls      : trade.setupClass || '',
+      model    : trade.candle    || '',
+      pictureUrl: trade.imgLink  || '',
+      tip      : trade.note      || '',
+      session  : trade.sessions  || '',
+    });
+    sendSheet('saveTrade', sheetPayload2);
+  }
   showToast('✅ อัปเดตออเดอร์แล้ว','success');
 }
 function saveDayM(){
@@ -2909,13 +2933,17 @@ function _applyPortfoliosTLP(sheetPorts){
   }
 }
 
-function sendSheet(action,data){
+function sendSheet(action,data,silent){
   if(!S.scriptUrl)return;
   var icons={saveTrade:'📊',saveSession:'📝',deleteTrade:'🗑',deleteDay:'🗑',saveAssets:'🗂️',deletePortfolio:'🗑'};
   var payload=Object.assign({action:action, portfolio:S.currentPortfolio}, data);
-  fetch(S.scriptUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-    .then(function(){showToast((icons[action]||'📊')+' Sheet: '+action+' OK','success');})
-    .catch(function(err){showToast('⚠ Sheet error: '+err.message,'error');});
+  // ใช้ text/plain เพื่อหลีกเลี่ยง CORS preflight กับ Google Apps Script
+  fetch(S.scriptUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(payload)})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!silent) showToast((icons[action]||'📊')+' Sheet: '+(d.status||'ok'),'success');
+    })
+    .catch(function(err){if(!silent) showToast('⚠ Sheet error: '+err.message,'error');});
 }
 // Sync Asset list to/from Sheet (item 4)
 function saveAssetsToSheet(){
@@ -2947,6 +2975,37 @@ function loadAssetsFromSheet(){
 var _autoSyncTimer=null;
 var _syncIntervalMin=5;
 
+// ════════════════════════════════════════════════════
+// FIELD NORMALIZER — แปลงฟิลด์จาก Sheet ให้ตรงกับ TLP
+// Sheet อาจเก็บค่าจาก NTJ (result=TP/Loss/Miss, side=Buy/Sell)
+// หรือจาก TLP (result=Win/Loss/BE, side=Long/Short)
+// ════════════════════════════════════════════════════
+function normalizeTradeFromSheet(t){
+  if(!t) return t;
+  // result: TP→Win, Miss→BE
+  if(t.result==='TP')   t.result='Win';
+  if(t.result==='Miss') t.result='BE';
+  // side: Buy→Long, Sell→Short (จาก NTJ position field)
+  if(t.side==='Buy')  t.side='Long';
+  if(t.side==='Sell') t.side='Short';
+  // setupClass alias (NTJ stores as cls in row[10], GAS maps to setupClass already)
+  // candle alias (NTJ stores as model in row[12], GAS maps to candle already)
+  // imgLink alias (NTJ stores as pictureUrl in row[35], GAS maps to imgLink already)
+  // note alias (NTJ stores as tip in row[36], GAS maps to note already)
+  // sessions: NTJ stores single string, TLP expects string — compatible
+  return t;
+}
+
+function normalizeAllTrades(tradesObj){
+  if(!tradesObj) return tradesObj;
+  Object.keys(tradesObj).forEach(function(date){
+    if(Array.isArray(tradesObj[date])){
+      tradesObj[date]=tradesObj[date].map(normalizeTradeFromSheet);
+    }
+  });
+  return tradesObj;
+}
+
 function syncFromSheet(showMsg){
   if(!S.scriptUrl){showToast('⚠ ยังไม่ได้ตั้ง Sheet URL','error');return;}
   var el=document.getElementById('syncStatus');
@@ -2956,9 +3015,9 @@ function syncFromSheet(showMsg){
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.status!=='ok'){throw new Error(d.msg||'error');}
-      // ── อัปเดต Trades ──
+      // ── อัปเดต Trades (normalize fields จาก NTJ→TLP) ──
       if(d.trades && typeof d.trades==='object'){
-        S.trades=d.trades;
+        S.trades=normalizeAllTrades(d.trades);
         localStorage.setItem('port_'+S.currentPortfolio+'_t',JSON.stringify(S.trades));
       }
       // ── อัปเดต Sessions ──
@@ -3403,7 +3462,7 @@ function renderTodayOrders(){
   el.innerHTML=trades.map(function(t,i){
     var p=parseFloat(t.pnl)||0;
     var col=p>0?'var(--green)':p<0?'var(--red)':'var(--amber)';
-    var res=t.result==='Win'?'✓W':t.result==='Loss'?'✗L':'BE';
+    var _rr=t.result;var res=(_rr==='Win'||_rr==='TP')?'✓W':_rr==='Loss'?'✗L':'BE';
     var badge='<span style="font-size:9px;font-weight:700;color:'+col+';">'+res+'</span>';
     return '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:6px 8px;margin-bottom:4px;font-size:10px;display:flex;justify-content:space-between;align-items:center;">'
       +'<div>'
